@@ -6,6 +6,7 @@ on:
     tags: ['release-*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,6 +26,9 @@ jobs:
           components: rustfmt, clippy
       - name: Install qemu (for test-disk generator)
         run: |
+          # This runner does not use Chrome; stale channel indexes must not
+          # block installation of the Ubuntu filesystem fixture tools.
+          sudo rm -f /etc/cron.daily/google-chrome /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-system-x86 libarchive-tools
       - name: Cache cargo registry
