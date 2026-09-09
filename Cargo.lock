@@ -5,6 +5,7 @@ version = 4
 [[package]]
 name = "am-fs-core"
 version = "0.2.10"
+source = "git+https://github.com/1vivy/rust-fs-core?rev=e6e891a#e6e891a0828fcd80d1c77f52b9ce1f447b8d1a1e"
 
 [[package]]
 name = "am-fs-ext4"
