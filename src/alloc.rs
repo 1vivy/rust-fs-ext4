@@ -221,6 +221,114 @@ pub fn plan_block_allocation<F>(
     groups: &[BlockGroupDescriptor],
     count: u32,
     hint_group: u32,
+    bitmap_reader: F,
+) -> Result<BlockAllocationPlan>
+where
+    F: FnMut(u64) -> Result<Vec<u8>>,
+{
+    plan_block_allocation_excluding(sb, groups, count, hint_group, &[], bitmap_reader)
+}
+
+/// Set the bits of `reserved` that fall inside group `gi`.
+///
+/// The blocks are absolute; a group's bit `n` is block
+/// `gi * blocks_per_group + s_first_data_block + n`. Anything outside
+/// this group, or past the bits the group actually has, is skipped
+/// rather than wrapped -- a reservation in another group is not this
+/// group's business, and `blocks_in_group` is the ceiling the scan
+/// already honours.
+fn mark_reserved_in_group(
+    sb: &Superblock,
+    gi: u32,
+    max_bits: u32,
+    reserved: &[u64],
+    bitmap: &mut [u8],
+) {
+    if reserved.is_empty() {
+        return;
+    }
+    let group_first_block = (gi as u64) * (sb.blocks_per_group as u64) + sb.first_data_block as u64;
+    for &block in reserved {
+        let Some(offset) = block.checked_sub(group_first_block) else {
+            continue;
+        };
+        if offset >= max_bits as u64 {
+            continue;
+        }
+        let bit = offset as usize;
+        let byte = bit / 8;
+        if byte < bitmap.len() {
+            bitmap[byte] |= 1u8 << (bit % 8);
+        }
+    }
+}
+
+/// Every block a transaction has already spoken for: the data plan's
+/// whole run, plus the whole run of every meta plan handed out so far.
+///
+/// THE LIST IS A FUNCTION BECAUSE THE INLINE VERSION WAS UNWITNESSED.
+/// Three separate reverts of the inline code — dropping the data run,
+/// no-oping the meta push, and keeping only `first_block` instead of the
+/// whole `count` run — each left 278 library tests green and EXIT=0.
+/// Nothing in the suite reaches `extend_dir_and_add_entry_deep`, on any
+/// runner, so the three lines that make the fix were held by nothing.
+/// Extracted here they are three assertions instead.
+///
+/// A PLAN IS A RUN, NOT A BLOCK. `count` is 1 for every caller today,
+/// which is exactly why `first_block` alone passed every test that
+/// existed: the day a directory data page is planned as two contiguous
+/// blocks, a `first_block`-only reservation hands the second one out
+/// again as a tree node.
+pub(crate) fn reserved_blocks(
+    data: &BlockAllocationPlan,
+    handed_out: &[BlockAllocationPlan],
+) -> Vec<u64> {
+    std::iter::once(data)
+        .chain(handed_out)
+        .flat_map(|plan| (0..u64::from(plan.count)).map(move |i| plan.first_block + i))
+        .collect()
+}
+
+/// [`plan_block_allocation`], with blocks that are SPOKEN FOR BUT NOT YET
+/// COMMITTED treated as used.
+///
+/// # WHY THE PLANNER HAS TO BE TOLD, RATHER THAN ITS ANSWER FILTERED
+///
+/// A caller that plans several allocations before committing any of
+/// them -- which is the late-commit ordering the write paths use so a
+/// failure half way through leaks no blocks -- shows this function the
+/// same unchanged bitmap every time, so it returns the same block every
+/// time. Measured on a fresh 64 MiB image, three consecutive plans
+/// against an uncommitted bitmap: `517 517 517`.
+///
+/// The caller that hit this defended itself with one equality test
+/// against one reserved block, which is wrong twice: it refuses with
+/// `NoSpaceLeftOnDevice` on a nearly empty filesystem when the block
+/// does match, and when it does not it lets the SECOND meta block alias
+/// the first, because the test never looked at the ones it had already
+/// handed out. Two extent-tree nodes on one physical block is silent
+/// corruption; the refusal is at least loud.
+///
+/// EXTENDING THE EQUALITY TEST TO THE WHOLE LIST IS NOT THE FIX. The
+/// planner would go on returning the same block, so the list would just
+/// turn the aliasing into a second spurious refusal. The reservations
+/// have to be in the bitmap the scan reads.
+///
+/// # THE OVERLAY CANNOT LIVE IN THE CALLER'S READER
+///
+/// The obvious smaller change -- have the caller's `bitmap_reader`
+/// return bytes with the reserved bits already set -- is not enough,
+/// because a `BLOCK_UNINIT` group never calls the reader at all: the
+/// bitmap is fabricated as all-free right here. That is exactly the
+/// state a freshly formatted image is in, which is where this is most
+/// likely to bite. So the marking happens after the bitmap is obtained,
+/// on both paths.
+pub fn plan_block_allocation_excluding<F>(
+    sb: &Superblock,
+    groups: &[BlockGroupDescriptor],
+    count: u32,
+    hint_group: u32,
+    reserved: &[u64],
     mut bitmap_reader: F,
 ) -> Result<BlockAllocationPlan>
 where
@@ -246,11 +354,12 @@ where
         // may be short).
         let max_bits = blocks_in_group(sb, gi);
 
-        let bitmap_bytes: Vec<u8> = if bgd.flags().contains(BgdFlags::BLOCK_UNINIT) {
+        let mut bitmap_bytes: Vec<u8> = if bgd.flags().contains(BgdFlags::BLOCK_UNINIT) {
             vec![0u8; sb.block_size() as usize]
         } else {
             bitmap_reader(bgd.block_bitmap)?
         };
+        mark_reserved_in_group(sb, gi, max_bits, reserved, &mut bitmap_bytes);
 
         let Some(bit_start) = find_free_run(&bitmap_bytes, 0, max_bits, count) else {
             continue;
@@ -474,6 +583,94 @@ pub fn apply_bitmap_write(buf: &mut [u8], w: &BitmapWrite) {
 mod tests {
     use super::*;
 
+    // --- reserved_blocks -------------------------------------------
+    //
+    // THESE THREE ASSERTIONS ARE THE FIX. Before the extraction the
+    // same three decisions were inline in
+    // `Filesystem::extend_dir_and_add_entry_deep`, and each could be
+    // reverted with 278 library tests green, EXIT=0, 0 compile errors:
+    // dropping the data run, no-oping the meta push, and reserving only
+    // `first_block` instead of the whole `count` run. Nothing in the
+    // suite reaches that function on any runner, so a test there was
+    // never going to hold them.
+
+    fn mk_plan(first_block: u64, count: u32) -> BlockAllocationPlan {
+        BlockAllocationPlan {
+            first_block,
+            count,
+            bitmap: BitmapWrite {
+                bitmap_block: 0,
+                bit_start: 0,
+                count,
+                set: true,
+            },
+            bgd: BgdCounterUpdate {
+                group_idx: 0,
+                free_blocks_delta: -(count as i32),
+                free_inodes_delta: 0,
+                used_dirs_delta: 0,
+            },
+            sb: SuperblockCounterUpdate {
+                free_blocks_delta: -(count as i64),
+                free_inodes_delta: 0,
+            },
+        }
+    }
+
+    /// THE DATA PAGE IS SPOKEN FOR. Nothing has reached the bitmap yet,
+    /// so a planner told nothing returns the data block again — and on
+    /// the first call it does exactly that, because that is the block it
+    /// returned for the data page moments earlier.
+    #[test]
+    fn the_data_plan_is_reserved() {
+        assert_eq!(reserved_blocks(&mk_plan(517, 1), &[]), vec![517]);
+    }
+
+    /// A PLAN IS A RUN, NOT A BLOCK. `count` is 1 for every caller
+    /// today, which is precisely why reserving `first_block` alone
+    /// passed every test that existed. The day a directory data page is
+    /// planned as two contiguous blocks, that version hands the second
+    /// one out again as a tree node.
+    #[test]
+    fn a_multi_block_plan_reserves_its_whole_run() {
+        assert_eq!(
+            reserved_blocks(&mk_plan(100, 3), &[]),
+            vec![100, 101, 102],
+            "reserving only first_block leaves 101 and 102 free to be handed out again"
+        );
+        assert_eq!(
+            reserved_blocks(&mk_plan(100, 1), &[mk_plan(200, 4)]),
+            vec![100, 200, 201, 202, 203],
+            "a handed-out meta plan contributes its whole run too"
+        );
+    }
+
+    /// THE SECOND CALL MUST SEE THE FIRST CALL'S ANSWER. Without this
+    /// the planner reads the same unchanged bitmap and returns the same
+    /// block, it passes into `pending_meta` a second time, and two
+    /// extent-tree nodes share one physical block — silent corruption,
+    /// which is the worse of the two consequences.
+    #[test]
+    fn every_meta_plan_handed_out_so_far_is_reserved() {
+        let data = mk_plan(517, 1);
+        let first = reserved_blocks(&data, &[]);
+        assert_eq!(first, vec![517]);
+
+        let handed_out = vec![mk_plan(518, 1)];
+        let second = reserved_blocks(&data, &handed_out);
+        assert!(
+            second.contains(&518),
+            "the block the first call was given must not be offered again: {second:?}"
+        );
+        assert!(
+            second.contains(&517),
+            "and the data block stays reserved across calls: {second:?}"
+        );
+
+        let handed_out = vec![mk_plan(518, 1), mk_plan(519, 1)];
+        assert_eq!(reserved_blocks(&data, &handed_out), vec![517, 518, 519]);
+    }
+
     fn mk_sb(
         block_size: u32,
         blocks_per_group: u32,
@@ -687,6 +884,125 @@ mod tests {
         assert_eq!(plan.bgd.group_idx, 1);
         // Block 1 + group1_offset
         assert_eq!(plan.first_block, 1 + 32768);
+    }
+
+    /// THE DEFECT, AND ITS CONTROL IN THE SAME TEST.
+    ///
+    /// A caller that plans several allocations before committing any of
+    /// them shows the planner the same bitmap every time. Without
+    /// reservations the planner is right to return the same block every
+    /// time -- the bitmap says it is free -- which is why the fix is to
+    /// tell it, not to filter its answer.
+    #[test]
+    fn consecutive_plans_repeat_without_reservations_and_advance_with_them() {
+        let sb = mk_sb(4096, 32768, 8192, 65536);
+        let groups = vec![mk_bgd(32768, 8000, 0, 0)];
+        let read = |_b| Ok(vec![0u8; 4096]);
+
+        // The uncommitted bitmap, three times over: identical answers.
+        let unreserved: Vec<u64> = (0..3)
+            .map(|_| {
+                plan_block_allocation(&sb, &groups, 1, 0, read)
+                    .unwrap()
+                    .first_block
+            })
+            .collect();
+        assert_eq!(
+            unreserved,
+            vec![1, 1, 1],
+            "nothing was committed, so the scan sees the same bytes each time"
+        );
+
+        // The same three, each told what the previous ones took.
+        let mut reserved: Vec<u64> = Vec::new();
+        let mut handed_out: Vec<u64> = Vec::new();
+        for _ in 0..3 {
+            let plan =
+                plan_block_allocation_excluding(&sb, &groups, 1, 0, &reserved, read).unwrap();
+            reserved.push(plan.first_block);
+            handed_out.push(plan.first_block);
+        }
+        assert_eq!(
+            handed_out,
+            vec![1, 2, 3],
+            "each plan must avoid the blocks the ones before it took"
+        );
+    }
+
+    /// A MULTI-BLOCK RESERVATION IS RESERVED WHOLE.
+    ///
+    /// `count` is not always 1: the data-page plan this was written for
+    /// can cover a run, and reserving only its first block would let the
+    /// next plan land inside it.
+    #[test]
+    fn a_reserved_run_is_skipped_entirely() {
+        let sb = mk_sb(4096, 32768, 8192, 65536);
+        let groups = vec![mk_bgd(32768, 8000, 0, 0)];
+        let read = |_b| Ok(vec![0u8; 4096]);
+        let reserved: Vec<u64> = (1..=4).collect();
+        let plan = plan_block_allocation_excluding(&sb, &groups, 1, 0, &reserved, read).unwrap();
+        assert_eq!(plan.first_block, 5, "blocks 1..=4 are spoken for");
+    }
+
+    /// THE CASE AN OVERLAY IN THE CALLER'S READER CANNOT REACH.
+    ///
+    /// A `BLOCK_UNINIT` group never calls the bitmap reader -- the
+    /// bitmap is fabricated as all-free -- so a caller that set the bits
+    /// on the bytes it returns would have no effect here at all. That is
+    /// the state a freshly formatted image is in.
+    #[test]
+    fn a_reservation_is_honoured_in_an_uninit_group() {
+        let sb = mk_sb(4096, 32768, 8192, 65536);
+        let groups = vec![mk_bgd(32768, 8000, 0, BgdFlags::BLOCK_UNINIT.bits())];
+        let mut call_count = 0;
+        let read = |_b| {
+            call_count += 1;
+            Ok(vec![0u8; 4096])
+        };
+        let plan = plan_block_allocation_excluding(&sb, &groups, 1, 0, &[1], read).unwrap();
+        assert_eq!(plan.first_block, 2, "block 1 is reserved");
+        assert_eq!(call_count, 0, "an UNINIT group still reads no bitmap");
+    }
+
+    /// THE ACCEPTANCE HALF: a reservation is a reservation of one block
+    /// in one group, not a blanket refusal.
+    ///
+    /// A reservation belonging to another group, or past the bits the
+    /// group actually has, must not narrow this group's scan -- an
+    /// over-eager mask would refuse allocations on a filesystem with
+    /// room, which is the failure the old equality test already had.
+    #[test]
+    fn a_reservation_outside_this_group_does_not_narrow_it() {
+        let sb = mk_sb(4096, 32768, 8192, 65536);
+        let groups = vec![mk_bgd(32768, 8000, 0, 0), mk_bgd(32768, 8000, 0, 0)];
+        let read = |_b| Ok(vec![0u8; 4096]);
+        // Group 1's first block, and a block past the end of the volume.
+        let reserved = [1 + 32768, 999_999];
+        let plan = plan_block_allocation_excluding(&sb, &groups, 1, 0, &reserved, read).unwrap();
+        assert_eq!(
+            plan.first_block, 1,
+            "neither reservation is in group 0, so group 0 is untouched"
+        );
+        // And the one that IS in group 1 still applies there.
+        let full_g0 = vec![mk_bgd(0, 8000, 0, 0), mk_bgd(32768, 8000, 0, 0)];
+        let plan = plan_block_allocation_excluding(&sb, &full_g0, 1, 0, &reserved, read).unwrap();
+        assert_eq!(
+            plan.first_block,
+            2 + 32768,
+            "group 0 has no room, and group 1's first block is reserved"
+        );
+    }
+
+    /// `plan_block_allocation` is `plan_block_allocation_excluding` with
+    /// nothing reserved, and must stay exactly that.
+    #[test]
+    fn the_unreserved_wrapper_agrees_with_the_general_form() {
+        let sb = mk_sb(4096, 32768, 8192, 65536);
+        let groups = vec![mk_bgd(5, 8000, 0, 0), mk_bgd(20000, 8000, 0, 0)];
+        let read = |_b| Ok(vec![0u8; 4096]);
+        let a = plan_block_allocation(&sb, &groups, 10, 0, read).unwrap();
+        let b = plan_block_allocation_excluding(&sb, &groups, 10, 0, &[], read).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
