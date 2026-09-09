@@ -32,7 +32,7 @@ bitflags::bitflags! {
     pub struct BgdFlags: u16 {
         /// Inode table not initialized — skip reading (treat as all-free).
         const INODE_UNINIT = 0x0001;
-        /// Block bitmap not initialized — treat as all blocks free.
+        /// Block bitmap not initialized — reconstruct its reserved metadata.
         const BLOCK_UNINIT = 0x0002;
         /// Inode table is fully zeroed on disk.
         const ITABLE_ZEROED = 0x0004;
