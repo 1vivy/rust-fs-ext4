@@ -3,38 +3,30 @@ name: release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'release-*'
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  # Pinned tag of the sibling am-fs-core repo used to satisfy the path dep
-  # during local build/verify. Bump in lockstep with the am-fs-core version
-  # constraint in Cargo.toml when releasing a new fs-ext4 minor.
-  FS_CORE_REF: v0.2.10
 
 jobs:
   test:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: clone am-fs-core sibling
-        shell: bash
-        run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.95.0
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: verify tag matches Cargo.toml version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${GITHUB_REF_NAME#release-}"
           crate_ver=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')
           if [ "$tag" != "$crate_ver" ]; then
             echo "tag $tag does not match Cargo.toml version $crate_ver" >&2
@@ -71,16 +63,12 @@ jobs:
     name: validate mkfs_ext4 (fsck.ext4 strict)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: clone am-fs-core sibling
-        shell: bash
-        run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: install e2fsprogs
         run: |
@@ -125,9 +113,25 @@ jobs:
   # Native builds only, one runner per platform: cross-compiling Rust
   # needs either a cross toolchain or an emulator, and neither is worth
   # it for two targets that GitHub already provides natively.
-  package-cli:
-    name: package mkfs.ext4 (${{ matrix.label }})
+  prepare-draft:
+    name: Prepare fork draft
+    if: github.repository == '1vivy/rust-fs-ext4'
     needs: [test, validate-fsck]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/draft-source.sh
+
+  package-cli:
+    if: github.repository == '1vivy/rust-fs-ext4'
+    name: package mkfs.ext4 (${{ matrix.label }})
+    needs: [test, validate-fsck, prepare-draft]
     permissions:
       # `gh release` writes assets onto the tag's release.
       contents: write
@@ -142,16 +146,12 @@ jobs:
             label: linux-x86_64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: clone am-fs-core sibling
-        shell: bash
-        run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: build mkfs_ext4
         shell: bash
@@ -162,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${GITHUB_REF_NAME#release-}"
           crate="$(grep -m1 '^name = ' Cargo.toml | sed 's/name = //; s/"//g')"
           tarball="${crate}-${version}-${{ matrix.label }}.tar.gz"
 
@@ -201,24 +201,18 @@ jobs:
           test -x "$probe/mkfs.ext4"
           "$probe/mkfs.ext4" --help > /dev/null
 
-      # The release for a tag may not exist yet — this repo's tags have
-      # historically been published to crates.io without a GitHub
-      # release. Create it if absent so the upload has somewhere to go,
-      # and let two matrix legs race harmlessly: whichever arrives first
-      # creates it, the other's `view` succeeds.
-      - name: upload to the release
+      - name: Attach the CLI to the reviewed draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
-          gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --title "$tag" --generate-notes \
-            || gh release view "$tag" >/dev/null
-          gh release upload "$tag" "${{ steps.pack.outputs.tarball }}" --clobber
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" "${{ steps.pack.outputs.tarball }}" --clobber
 
   publish:
+    if: github.repository == 'christhomas/rust-fs-ext4'
     name: publish to crates.io
     needs: [test, validate-fsck]
     runs-on: ubuntu-latest
@@ -227,13 +221,9 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: clone am-fs-core sibling
-        shell: bash
-        run: git clone --depth 1 --branch "$FS_CORE_REF" https://github.com/antimatter-studios/rust-fs-core.git ../rust-fs-core
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.95.0
 
