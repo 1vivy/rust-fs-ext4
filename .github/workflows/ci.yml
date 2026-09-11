@@ -40,11 +40,16 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
           fi
-      - name: Cache Cargo sources and tools
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # These are ordinary compiler outputs. Filesystem fixtures are generated
+      # in test-disks or temporary directories, outside this cache.
+      - name: Cache Cargo compiler outputs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          prefix-key: ext4-v1-sources
-          cache-targets: false
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - name: Cache alpine VM assets
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -140,11 +145,16 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
           fi
-      - name: Cache Cargo sources and tools
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # These are ordinary compiler outputs. Filesystem fixtures are generated
+      # in test-disks or temporary directories, outside this cache.
+      - name: Cache Cargo compiler outputs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          prefix-key: ext4-v1-sources
-          cache-targets: false
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-mkfs-${{ hashFiles('**/Cargo.lock') }}
       - name: Build mkfs_ext4
         run: cargo build --locked --release --bin mkfs_ext4
       # 32 MiB at the default 4 KiB block size is one block group.

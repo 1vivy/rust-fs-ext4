@@ -24,9 +24,6 @@ jobs:
           toolchain: 1.95.0
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          prefix-key: ext4-v1-sources
-          cache-targets: false
 
       - name: verify tag matches Cargo.toml version
         run: |
@@ -81,9 +78,6 @@ jobs:
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          prefix-key: ext4-v1-sources
-          cache-targets: false
 
       - name: install e2fsprogs
         run: |
@@ -175,9 +169,6 @@ jobs:
         with:
           toolchain: 1.95.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          prefix-key: ext4-v1-sources
-          cache-targets: false
 
       - name: build mkfs_ext4
         shell: bash
