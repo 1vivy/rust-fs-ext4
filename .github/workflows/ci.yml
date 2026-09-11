@@ -4,12 +4,16 @@ on:
   push:
     branches: [main]
     tags: ['release-*']
+    paths-ignore: ["**/*.md", "**/*.rst", "docs/**", "LICENSE*"]
   pull_request:
     branches: [main]
+    paths-ignore: ["**/*.md", "**/*.rst", "docs/**", "LICENSE*"]
   workflow_dispatch:
 
 permissions:
   contents: read
+env:
+  CARGO_BUILD_JOBS: 2
 
 jobs:
   test:
@@ -26,21 +30,23 @@ jobs:
           components: rustfmt, clippy
       - name: Install qemu (for test-disk generator)
         run: |
-          # This runner does not use Chrome; stale channel indexes must not
-          # block installation of the Ubuntu filesystem fixture tools.
-          sudo rm -f /etc/cron.daily/google-chrome /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 libarchive-tools
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+          PACKAGES="qemu-system-x86 libarchive-tools"
+          missing=()
+          for package in $PACKAGES; do
+            [[ "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)" == installed ]] || missing+=("$package")
+          done
+          if (( ${#missing[@]} )); then
+            sudo rm -f /etc/cron.daily/google-chrome /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+      - name: Cache Cargo sources and tools
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          prefix-key: ext4-v1-sources
+          cache-targets: false
       - name: Cache alpine VM assets
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: test-disks/.vm-cache
           key: vm-cache-alpine-3.21.4
@@ -124,16 +130,21 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       - name: Install e2fsprogs
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq e2fsprogs
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+          PACKAGES="e2fsprogs"
+          missing=()
+          for package in $PACKAGES; do
+            [[ "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)" == installed ]] || missing+=("$package")
+          done
+          if (( ${#missing[@]} )); then
+            sudo rm -f /etc/cron.daily/google-chrome /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends "${missing[@]}"
+          fi
+      - name: Cache Cargo sources and tools
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-mkfs-${{ hashFiles('**/Cargo.lock') }}
+          prefix-key: ext4-v1-sources
+          cache-targets: false
       - name: Build mkfs_ext4
         run: cargo build --locked --release --bin mkfs_ext4
       # 32 MiB at the default 4 KiB block size is one block group.
