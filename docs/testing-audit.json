@@ -13989,12 +13989,351 @@
       "reason": "The implementation-owning repository already owns this contract; retain its coverage without reproducing the driver matrix in CBM.",
       "origin": "upstream-inherited",
       "configuration": "as declared by crate target/features"
+    },
+    {
+      "source": {
+        "name": "a break authorised against an earlier generation spares its replacement",
+        "path": "tests/scripts/vm-slot-break-generation.sh",
+        "line": 64
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "Exclusive VM slot ownership remains bound to the generation that acquired it.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / disposable lock directory",
+      "replacement": null,
+      "reason": "Owns the filesystem repository\u2019s reusable oracle VM lease; retain here without adding it to CBM CI.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a break authorised against the current generation still frees it",
+        "path": "tests/scripts/vm-slot-break-generation.sh",
+        "line": 72
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "Exclusive VM slot ownership remains bound to the generation that acquired it.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / disposable lock directory",
+      "replacement": null,
+      "reason": "Owns the filesystem repository\u2019s reusable oracle VM lease; retain here without adding it to CBM CI.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a tokenless lock from an older version is still reclaimable",
+        "path": "tests/scripts/vm-slot-break-generation.sh",
+        "line": 80
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "Exclusive VM slot ownership remains bound to the generation that acquired it.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / disposable lock directory",
+      "replacement": null,
+      "reason": "Owns the filesystem repository\u2019s reusable oracle VM lease; retain here without adding it to CBM CI.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a release authorised against an earlier generation spares its replacement",
+        "path": "tests/scripts/vm-slot-break-generation.sh",
+        "line": 113
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "Exclusive VM slot ownership remains bound to the generation that acquired it.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / disposable lock directory",
+      "replacement": null,
+      "reason": "Owns the filesystem repository\u2019s reusable oracle VM lease; retain here without adding it to CBM CI.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a release holding the current generation still frees its slot",
+        "path": "tests/scripts/vm-slot-break-generation.sh",
+        "line": 121
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "Exclusive VM slot ownership remains bound to the generation that acquired it.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / disposable lock directory",
+      "replacement": null,
+      "reason": "Owns the filesystem repository\u2019s reusable oracle VM lease; retain here without adding it to CBM CI.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "no staging directory is left behind",
+        "path": "tests/scripts/vm-slot-break-generation.sh",
+        "line": 126
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "Exclusive VM slot ownership remains bound to the generation that acquired it.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / disposable lock directory",
+      "replacement": null,
+      "reason": "Owns the filesystem repository\u2019s reusable oracle VM lease; retain here without adding it to CBM CI.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a recorded holder's slot is not freed by anyone else",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 66
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a lock with no holder recorded yet is not freed by a non-holder",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 74
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "the holder can still release its own slot",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 80
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "--force still frees a lock with no holder recorded",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 86
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "acquire still reclaims a lock with no holder recorded",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 94
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a holder that completes its record within the grace keeps the slot",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 135
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "acquire still reclaims a lock whose holder record never arrived",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 146
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a live VM keeps its slot however long it has held it",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 174
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a lock whose VM is gone is still reclaimed",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 184
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "malformed holder record: 123",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 205
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "malformed holder record: /d\\tr\\t1\\tt\\textra",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 205
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "a well-formed record is still read as one",
+        "path": "tests/scripts/vm-slot-release-ownership.sh",
+        "line": 226
+      },
+      "kind": "shell subcase",
+      "decision": "keep",
+      "contract": "VM lease acquisition/release preserves live owners and reclaims abandoned records.",
+      "owner": "rust-fs-ext4",
+      "layer": "shell / process and disposable lock directory",
+      "replacement": null,
+      "reason": "The implementation owns its VM lifecycle contract; keep the existing coverage without duplicating it in application harnesses.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit inherited shell runner; inventoried, not run in this audit."
+    },
+    {
+      "source": {
+        "name": "mount, volume info, stat/list/read, and unmount through the C ABI",
+        "path": "tests/c_smoke/smoke.c",
+        "line": 21
+      },
+      "kind": "C integration family",
+      "decision": "keep",
+      "contract": "The ext4 Rust library exposes a compatible C ABI and returns the fixture\u2019s directory and file bytes.",
+      "owner": "rust-fs-ext4",
+      "layer": "external C consumer integration",
+      "replacement": null,
+      "reason": "Preserve the inherited external consumer smoke; its missing external build prerequisites are not evidence of CBM release failure.",
+      "origin": "upstream-inherited",
+      "configuration": "Inherited optional macOS consumer workspace: Makefile expects libext4bridge.a, external ext4_bridge.h and Apple frameworks; source includes external fs_ext4.h. Not self-contained in this checkout, not run."
+    },
+    {
+      "source": {
+        "name": "FreeBSD native ext2fs manifest oracle",
+        "path": "tests/qemu/freebsd/run-cross-validate.sh",
+        "line": 3
+      },
+      "kind": "OS qualification family",
+      "decision": "keep",
+      "contract": "An independent FreeBSD filesystem implementation reads the same directories and file hashes as the Rust implementation.",
+      "owner": "rust-fs-ext4",
+      "layer": "real guest filesystem oracle",
+      "replacement": null,
+      "reason": "Independent OS oracle belongs to the filesystem owner; keep opt-in, do not make every CBM change boot a guest.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit optional ARM64 QEMU/HVF or Vagrant guest and external test-disks fixtures; inventoried, not run."
+    },
+    {
+      "source": {
+        "name": "FreeBSD native ext2fs manifest oracle",
+        "path": "tests/vagrant/freebsd/run-cross-validate.sh",
+        "line": 3
+      },
+      "kind": "OS qualification family",
+      "decision": "keep",
+      "contract": "An independent FreeBSD filesystem implementation reads the same directories and file hashes as the Rust implementation.",
+      "owner": "rust-fs-ext4",
+      "layer": "real guest filesystem oracle",
+      "replacement": null,
+      "reason": "Independent OS oracle belongs to the filesystem owner; keep opt-in, do not make every CBM change boot a guest.",
+      "origin": "upstream-inherited",
+      "configuration": "Explicit optional ARM64 QEMU/HVF or Vagrant guest and external test-disks fixtures; inventoried, not run."
     }
   ],
   "totals": {
-    "test": 874
+    "test": 874,
+    "shell subcase": 18,
+    "C integration family": 1,
+    "OS qualification family": 2
   },
   "decisions": {
-    "keep": 874
+    "keep": 895
   }
 }
