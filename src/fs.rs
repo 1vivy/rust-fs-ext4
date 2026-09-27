@@ -159,32 +159,10 @@ impl<'a> crate::extent_mut::DeepReader for FsBlockReader<'a> {
     }
 }
 
-/// Current wall time as a u32 — matches ext4's `i_dtime` field. Uses
-/// `SystemTime::now()`; we don't care about monotonicity here, just that
-/// `dtime > ctime` so `ext4 audit tool` recognises the slot as recently deleted.
-fn now_unix_seconds() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as u32)
-        .unwrap_or(0)
-}
-
-// -----------------------------------------------------------------------
-// Inode builder helpers (H2)
-// -----------------------------------------------------------------------
-// Shared across all build_*_inode functions. Extracted to avoid five
-// identical copies of timestamps, generation, extra_isize, and checksum.
-
-use std::sync::atomic::{AtomicU32, Ordering};
-
 /// `EXT4_CASEFOLD_FL`: names in this directory hash casefolded.
 const EXT4_CASEFOLD_FL: u32 = 0x4000_0000;
 /// `EXT4_ENCRYPT_FL`: names in this directory are stored encrypted.
 const EXT4_ENCRYPT_FL: u32 = 0x0000_0800;
-/// Process-lifetime counter shared by all inode builders so successive
-/// creates within the same session produce distinct i_generation values.
-static INODE_GEN_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 /// Write atime, ctime, mtime (and crtime when the inode buffer is large
 /// enough) from `now` into the raw inode bytes.
@@ -198,13 +176,6 @@ fn write_inode_timestamps(raw: &mut [u8], now: u32) {
     if raw.len() >= INODE_SIZE_WITH_CRTIME {
         raw[OFF_CRTIME..OFF_CRTIME + 4].copy_from_slice(&now.to_le_bytes());
     }
-}
-
-/// Allocate a unique i_generation value for a new inode: PID combined with
-/// a per-process counter. Ensures distinct values across rapid successive
-/// creates (NFS stale-handle detection depends on generation uniqueness).
-fn alloc_inode_generation() -> u32 {
-    std::process::id().wrapping_add(INODE_GEN_COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Write a pre-allocated generation value into the raw inode bytes.
@@ -224,6 +195,7 @@ fn write_inode_extra_isize(raw: &mut [u8]) {
 }
 
 pub struct Filesystem {
+    runtime: Arc<dyn crate::runtime::Runtime>,
     pub dev: Arc<dyn BlockDevice>,
     pub sb: Superblock,
     pub groups: Vec<BlockGroupDescriptor>,
@@ -312,7 +284,12 @@ impl Filesystem {
     /// When `RO_COMPAT_METADATA_CSUM` is set, the superblock checksum is
     /// verified — failure aborts the mount with `Error::BadChecksum`.
     pub fn mount(dev: Arc<dyn BlockDevice>) -> Result<Self> {
-        Self::mount_inner(dev, false, DEFAULT_CACHE_BLOCKS)
+        Self::mount_inner(
+            dev,
+            false,
+            DEFAULT_CACHE_BLOCKS,
+            Arc::new(crate::runtime::SystemRuntime),
+        )
     }
 
     /// [`Filesystem::mount`] with a buffer cache of `blocks` clean blocks
@@ -321,7 +298,7 @@ impl Filesystem {
     /// cache against (#68). Journaled blocks awaiting checkpoint are held
     /// whatever the capacity.
     pub fn mount_with_cache(dev: Arc<dyn BlockDevice>, blocks: usize) -> Result<Self> {
-        Self::mount_inner(dev, false, blocks)
+        Self::mount_inner(dev, false, blocks, Arc::new(crate::runtime::SystemRuntime))
     }
 
     /// Like `mount`, but skips the mount-time journal replay even when the
@@ -337,13 +314,28 @@ impl Filesystem {
     /// dirty). This is the lazy/deferred-replay sibling of `mount`; for
     /// most callers `mount` is correct.
     pub fn mount_lazy(dev: Arc<dyn BlockDevice>) -> Result<Self> {
-        Self::mount_inner(dev, true, DEFAULT_CACHE_BLOCKS)
+        Self::mount_inner(
+            dev,
+            true,
+            DEFAULT_CACHE_BLOCKS,
+            Arc::new(crate::runtime::SystemRuntime),
+        )
+    }
+
+    /// Mount with caller-provided wall time and inode-generation policy.
+    /// The provider must remain valid for the entire mount, including recovery.
+    pub fn mount_with_runtime(
+        dev: Arc<dyn BlockDevice>,
+        runtime: Arc<dyn crate::runtime::Runtime>,
+    ) -> Result<Self> {
+        Self::mount_inner(dev, false, DEFAULT_CACHE_BLOCKS, runtime)
     }
 
     fn mount_inner(
         dev: Arc<dyn BlockDevice>,
         defer_replay: bool,
         cache_blocks: usize,
+        runtime: Arc<dyn crate::runtime::Runtime>,
     ) -> Result<Self> {
         let sb = Superblock::read(dev.as_ref())?;
         features::check_mountable(sb.feature_incompat, sb.feature_ro_compat)?;
@@ -368,6 +360,7 @@ impl Filesystem {
             cache_blocks,
         ));
         let mut fs = Self {
+            runtime,
             dev,
             sb,
             groups,
@@ -929,7 +922,7 @@ impl Filesystem {
         raw[0x64..0x68].copy_from_slice(&old_gen.to_le_bytes());
         self.finalize_inode_raw(orphan_ino, old_gen, &mut raw)?;
         self.buffer_write_inode(buf, orphan_ino, &raw)?;
-        Ok(Some((freed, now_unix_seconds(), true)))
+        Ok(Some((freed, self.runtime.now_unix_seconds(), true)))
     }
 
     /// Finish a `truncate()` that a crash interrupted, for an orphan that
@@ -1374,7 +1367,7 @@ impl Filesystem {
         }
         Self::patch_inode_size_and_blocks(&mut raw, new_size, inode.blocks)?;
 
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes()); // ctime
         raw[0x10..0x14].copy_from_slice(&now.to_le_bytes()); // mtime
 
@@ -1499,7 +1492,7 @@ impl Filesystem {
         Self::patch_inode_size_and_blocks(&mut raw, inode.size, new_i_blocks)?;
 
         // POSIX: fallocate bumps mtime + ctime.
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes());
         raw[0x10..0x14].copy_from_slice(&now.to_le_bytes());
 
@@ -1632,7 +1625,7 @@ impl Filesystem {
             .saturating_sub(freed_blocks * sectors_per_block)
             + allocated_blocks * sectors_per_block;
         Self::patch_inode_size_and_blocks(&mut raw, inode.size, new_i_blocks)?;
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes());
         raw[0x10..0x14].copy_from_slice(&now.to_le_bytes());
         self.finalize_inode_raw(ino, inode.generation, &mut raw)?;
@@ -1687,7 +1680,7 @@ impl Filesystem {
         raw[0x00..0x02].copy_from_slice(&new_mode.to_le_bytes());
 
         // POSIX: chmod bumps ctime (not mtime).
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes());
 
         self.finalize_inode_raw(ino, inode.generation, &mut raw)?;
@@ -1923,6 +1916,34 @@ impl Filesystem {
             groups[gi].flags = flags;
         }
         Cow::Owned(groups)
+    }
+
+    /// Plan a block allocation inside an open transaction: bitmaps come from
+    /// the buffer when it has staged them, and so do uninit flags.
+    ///
+    /// The second half is the one that matters. Staging an allocation into a
+    /// BLOCK_UNINIT group clears the flag on the buffer only, so it becomes
+    /// visible to the mount when the buffer commits. A plan that still sees
+    /// the flag synthesises the bitmap from the group's metadata and never
+    /// reads the staged one, so it offers the run just handed out again.
+    fn plan_buffered_block_allocation(
+        &self,
+        buf: &BlockBuffer,
+        count: u32,
+        hint: u32,
+    ) -> Result<crate::alloc::BlockAllocationPlan> {
+        let mut groups = self.allocation_groups();
+        for (&gi, &flags) in &buf.uninit_cleared {
+            if let Some(g) = groups.to_mut().get_mut(gi) {
+                g.flags = flags;
+            }
+        }
+        crate::alloc::plan_block_allocation(&self.sb, &groups, count, hint, |block| {
+            match buf.dirty.get(&block) {
+                Some(bytes) => Ok(bytes.clone()),
+                None => self.read_block(block),
+            }
+        })
     }
 
     pub(crate) fn buffer_mark_block_run_used(
@@ -2733,7 +2754,7 @@ impl Filesystem {
             raw[0x7A..0x7C].copy_from_slice(&hi.to_le_bytes());
         }
 
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes());
 
         self.finalize_inode_raw(ino, inode.generation, &mut raw)?;
@@ -2771,7 +2792,7 @@ impl Filesystem {
 
         raw[OFF_FLAGS..OFF_FLAGS + 4].copy_from_slice(&flags.to_le_bytes());
 
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&now.to_le_bytes());
 
         self.finalize_inode_raw(ino, inode.generation, &mut raw)?;
@@ -2842,7 +2863,7 @@ impl Filesystem {
                     let mut buf = BlockBuffer::new(bs);
                     let new_nr = self.buffer_unshare_xattr_block(&mut buf, ino, block_nr, block)?;
                     Self::write_file_acl(&mut raw, new_nr)?;
-                    raw[0x0C..0x10].copy_from_slice(&now_unix_seconds().to_le_bytes());
+                    raw[0x0C..0x10].copy_from_slice(&self.runtime.now_unix_seconds().to_le_bytes());
                     self.finalize_inode_raw(ino, inode.generation, &mut raw)?;
                     self.buffer_write_inode(&mut buf, ino, &raw)?;
                     return self.commit_block_buffer(buf);
@@ -2872,7 +2893,7 @@ impl Filesystem {
                     let sectors_per_block = bs_u64 / 512;
                     let new_blocks = inode.blocks.saturating_sub(sectors_per_block);
                     Self::patch_inode_size_and_blocks(&mut raw, inode.size, new_blocks)?;
-                    raw[0x0C..0x10].copy_from_slice(&now_unix_seconds().to_le_bytes());
+                    raw[0x0C..0x10].copy_from_slice(&self.runtime.now_unix_seconds().to_le_bytes());
                     self.finalize_inode_raw(ino, inode.generation, &mut raw)?;
                     self.buffer_write_inode(&mut buf, ino, &raw)?;
                     return self.commit_block_buffer(buf);
@@ -3002,7 +3023,7 @@ impl Filesystem {
                 buf.put(block_nr, block);
             }
             // i_blocks unchanged — only need to bump ctime.
-            let now = now_unix_seconds();
+            let now = self.runtime.now_unix_seconds();
             raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes());
             self.finalize_inode_raw(ino, inode.generation, raw)?;
             self.buffer_write_inode(&mut buf, ino, raw)?;
@@ -3053,7 +3074,7 @@ impl Filesystem {
         let sectors_per_block = bs_u64 / 512;
         let new_blocks = inode.blocks.saturating_add(sectors_per_block);
         Self::patch_inode_size_and_blocks(raw, inode.size, new_blocks)?;
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes());
         self.finalize_inode_raw(ino, inode.generation, raw)?;
         self.buffer_write_inode(&mut buf, ino, raw)?;
@@ -3142,7 +3163,7 @@ impl Filesystem {
     /// attribute writes that touch external storage but don't otherwise
     /// modify the inode body.
     fn bump_inode_ctime(&self, ino: u32, generation: u32, raw: &mut [u8]) -> Result<()> {
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes());
         self.finalize_inode_raw(ino, generation, raw)?;
         self.commit_inode_write(ino, raw)
@@ -3231,7 +3252,7 @@ impl Filesystem {
             raw[0x10..0x14].copy_from_slice(&mtime_base.to_le_bytes());
         }
         // POSIX: any attribute write bumps ctime.
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes());
 
         if i_extra_isize >= 8 && raw.len() >= 0x88 {
@@ -3399,7 +3420,7 @@ impl Filesystem {
         for b in &mut target_raw[..inode_size] {
             *b = 0;
         }
-        let dtime = now_unix_seconds();
+        let dtime = self.runtime.now_unix_seconds();
         target_raw[0x14..0x18].copy_from_slice(&dtime.to_le_bytes()); // dtime
         target_raw[0x64..0x68].copy_from_slice(&old_gen.to_le_bytes()); // generation
         self.finalize_inode_raw(target_ino, old_gen, &mut target_raw)?;
@@ -3625,9 +3646,9 @@ impl Filesystem {
             raw[OFF_BLOCK + 4..OFF_BLOCK + 8].copy_from_slice(&new_dev.to_le_bytes());
         }
 
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         write_inode_timestamps(&mut raw, now);
-        let generation = alloc_inode_generation();
+        let generation = self.runtime.next_inode_generation();
         write_inode_generation(&mut raw, generation);
         write_inode_extra_isize(&mut raw);
         self.stamp_inode_checksum(&mut raw, ino, generation);
@@ -3758,9 +3779,9 @@ impl Filesystem {
         let inline_target_off = OFF_BLOCK;
         raw[inline_target_off..inline_target_off + target.len()].copy_from_slice(target);
 
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         write_inode_timestamps(&mut raw, now);
-        let generation = alloc_inode_generation();
+        let generation = self.runtime.next_inode_generation();
         write_inode_generation(&mut raw, generation);
         write_inode_extra_isize(&mut raw);
         self.stamp_inode_checksum(&mut raw, ino, generation);
@@ -3821,9 +3842,9 @@ impl Filesystem {
         raw[OFF_BLOCKS_LO..OFF_BLOCKS_LO + 4].copy_from_slice(&(sectors as u32).to_le_bytes());
         self.map_one_block(&mut raw, data_phys)?;
 
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         write_inode_timestamps(&mut raw, now);
-        let generation = alloc_inode_generation();
+        let generation = self.runtime.next_inode_generation();
         write_inode_generation(&mut raw, generation);
         write_inode_extra_isize(&mut raw);
         self.stamp_inode_checksum(&mut raw, ino, generation);
@@ -3859,9 +3880,9 @@ impl Filesystem {
             raw[extent_header_off + 6..extent_header_off + 8].copy_from_slice(&0u16.to_le_bytes());
         }
 
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         write_inode_timestamps(&mut raw, now);
-        let generation = alloc_inode_generation();
+        let generation = self.runtime.next_inode_generation();
         write_inode_generation(&mut raw, generation);
         write_inode_extra_isize(&mut raw);
         self.stamp_inode_checksum(&mut raw, ino, generation);
@@ -4413,21 +4434,8 @@ impl Filesystem {
             while remaining_in_run > 0 {
                 let mut want = remaining_in_run;
                 let plan = loop {
-                    let plan_result = {
-                        let mut bitmap_reader = |b: u64| -> Result<Vec<u8>> {
-                            if let Some(bytes) = buf.dirty.get(&b) {
-                                return Ok(bytes.clone());
-                            }
-                            self.read_block(b)
-                        };
-                        crate::alloc::plan_block_allocation(
-                            &self.sb,
-                            &self.allocation_groups(),
-                            want,
-                            group_idx_of_inode,
-                            &mut bitmap_reader,
-                        )
-                    };
+                    let plan_result =
+                        self.plan_buffered_block_allocation(&buf, want, group_idx_of_inode);
                     match plan_result {
                         Ok(p) => break p,
                         Err(Error::Corrupt(msg)) if msg.contains("contiguous free run") => {
@@ -4498,21 +4506,11 @@ impl Filesystem {
                         let inode_generation = inode.generation;
                         let deep_plan = {
                             let mut alloc_closure = || -> Result<u64> {
-                                let p = {
-                                    let mut bitmap_reader = |b: u64| -> Result<Vec<u8>> {
-                                        if let Some(bytes) = buf.dirty.get(&b) {
-                                            return Ok(bytes.clone());
-                                        }
-                                        self.read_block(b)
-                                    };
-                                    crate::alloc::plan_block_allocation(
-                                        &self.sb,
-                                        &self.allocation_groups(),
-                                        1,
-                                        group_idx_of_inode,
-                                        &mut bitmap_reader,
-                                    )?
-                                };
+                                let p = self.plan_buffered_block_allocation(
+                                    &buf,
+                                    1,
+                                    group_idx_of_inode,
+                                )?;
                                 self.buffer_mark_block_run_used(&mut buf, p.first_block, 1)?;
                                 self.buffer_patch_bgd_counters(
                                     &mut buf,
@@ -4650,7 +4648,7 @@ impl Filesystem {
         new_sectors: u64,
     ) -> Result<()> {
         Self::patch_inode_size_and_blocks(raw, new_size, new_sectors)?;
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         raw[0x0C..0x10].copy_from_slice(&now.to_le_bytes()); // ctime
         raw[0x10..0x14].copy_from_slice(&now.to_le_bytes()); // mtime
         if self.csum.enabled {
@@ -4906,9 +4904,9 @@ impl Filesystem {
         raw[OFF_BLOCKS_HI..OFF_BLOCKS_HI + 2]
             .copy_from_slice(&(((sectors >> 32) & 0xFFFF) as u16).to_le_bytes());
 
-        let now = now_unix_seconds();
+        let now = self.runtime.now_unix_seconds();
         write_inode_timestamps(&mut raw, now);
-        let generation = alloc_inode_generation();
+        let generation = self.runtime.next_inode_generation();
         write_inode_generation(&mut raw, generation);
         write_inode_extra_isize(&mut raw);
         self.stamp_inode_checksum(&mut raw, ino, generation);
@@ -5507,7 +5505,7 @@ impl Filesystem {
                 for b in &mut dst_old_raw[..inode_size] {
                     *b = 0;
                 }
-                let dtime = now_unix_seconds();
+                let dtime = self.runtime.now_unix_seconds();
                 dst_old_raw[0x14..0x18].copy_from_slice(&dtime.to_le_bytes());
                 dst_old_raw[0x64..0x68].copy_from_slice(&old_gen.to_le_bytes());
                 self.finalize_inode_raw(dst_old_ino, old_gen, &mut dst_old_raw)?;
@@ -6447,7 +6445,7 @@ impl Filesystem {
         // refcounts — the same cleanup apply_unlink already does for files.
         let inode_size = self.sb.inode_size as usize;
         let mut target_raw = vec![0u8; inode_size];
-        let dtime = now_unix_seconds();
+        let dtime = self.runtime.now_unix_seconds();
         target_raw[0x14..0x18].copy_from_slice(&dtime.to_le_bytes());
         target_raw[0x64..0x68].copy_from_slice(&target_inode.generation.to_le_bytes());
         self.finalize_inode_raw(target_ino, target_inode.generation, &mut target_raw)?;
@@ -6589,8 +6587,8 @@ mod tests {
 
     #[test]
     fn alloc_inode_generation_produces_unique_values() {
-        let g1 = alloc_inode_generation();
-        let g2 = alloc_inode_generation();
+        let g1 = crate::runtime::Runtime::next_inode_generation(&crate::runtime::SystemRuntime);
+        let g2 = crate::runtime::Runtime::next_inode_generation(&crate::runtime::SystemRuntime);
         assert_ne!(g1, g2, "successive calls must produce distinct values");
     }
 
@@ -6666,6 +6664,63 @@ mod tests {
 
     fn mount(dev: &std::sync::Arc<MemDev>) -> Filesystem {
         Filesystem::mount(dev.clone()).expect("mount")
+    }
+
+    /// Two plans in one open transaction must not hand out the same blocks
+    /// of a BLOCK_UNINIT group. The first plan's staging clears the group's
+    /// flag only on the buffer, so a second plan that still sees the flag
+    /// re-synthesises the bitmap from metadata alone and ignores the staged
+    /// bits -- a data run's second sub-allocation, or an extent-tree block,
+    /// then lands on top of the first.
+    #[test]
+    fn buffered_allocations_do_not_reuse_an_uninitialized_groups_first_run() {
+        let dev = formatted();
+        {
+            let fs = mount(&dev);
+            let (bgt_block, off) = fs.sb.descriptor_location(0);
+            let ds = fs.sb.desc_size as usize;
+            let mut raw = fs.read_block(bgt_block).unwrap();
+            let flags = u16::from_le_bytes(raw[off + 0x12..off + 0x14].try_into().unwrap())
+                | crate::bgd::BgdFlags::BLOCK_UNINIT.bits();
+            raw[off + 0x12..off + 0x14].copy_from_slice(&flags.to_le_bytes());
+            let c = crate::checksum::group_desc_csum(&fs.sb, &fs.csum, 0, &raw[off..off + ds])
+                .expect("the formatted volume checksums its descriptors");
+            raw[off + 0x1e..off + 0x20].copy_from_slice(&c.to_le_bytes());
+            dev.write_at(bgt_block * u64::from(BS), &raw).unwrap();
+        }
+        let fs = mount(&dev);
+        assert!(fs.allocation_groups()[0]
+            .flags()
+            .contains(crate::bgd::BgdFlags::BLOCK_UNINIT));
+        let before = dev.bytes.lock().unwrap().clone();
+
+        let mut buf = BlockBuffer::new(BS);
+        let first = fs.plan_buffered_block_allocation(&buf, 4, 0).unwrap();
+        fs.buffer_mark_block_run_used(&mut buf, first.first_block, 4)
+            .unwrap();
+        let next = fs.plan_buffered_block_allocation(&buf, 1, 0).unwrap();
+        assert!(
+            next.first_block < first.first_block || next.first_block >= first.first_block + 4,
+            "second plan {} overlaps the staged run {}..{}",
+            next.first_block,
+            first.first_block,
+            first.first_block + 4
+        );
+
+        // Nothing committed: the mount still sees the group as uninit, the
+        // device is untouched, and a fresh transaction plans as before.
+        assert!(fs.allocation_groups()[0]
+            .flags()
+            .contains(crate::bgd::BgdFlags::BLOCK_UNINIT));
+        assert!(
+            *dev.bytes.lock().unwrap() == before,
+            "planning wrote to the device"
+        );
+        drop(buf);
+        let again = fs
+            .plan_buffered_block_allocation(&BlockBuffer::new(BS), 4, 0)
+            .unwrap();
+        assert_eq!(again.first_block, first.first_block);
     }
 
     fn resolve(fs: &Filesystem, path: &str) -> Result<u32> {
