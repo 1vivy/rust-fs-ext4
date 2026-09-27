@@ -80,10 +80,15 @@ chore_min_version: 0.6.0
 #     tier      measured          budget            headroom, and why
 #     unit        530 /  31,331      700 /  42,000   ~30%: tests get added
 #     images    1,065 /  44,731    1,400 /  60,000   ~30%
-#     oracle    1,523 / 107,656    1,950 / 140,000   ~28%. --show-output is
+#     oracle    1,786 / 140,018    2,300 / 180,000   ~29%. --show-output is
 #                                                    most of it, and it is
 #                                                    the evidence, so it
-#                                                    stays -- in the log
+#                                                    stays -- in the log.
+#                                                    Re-measured on the x86_64
+#                                                    CI job of PR #146, whose
+#                                                    checked-recovery sweep adds
+#                                                    170 lines / 21,576 bytes
+#                                                    (141 [oracle vm] e2fsck calls)
 #     kernel       52 /   2,855       80 /   4,000   ~50%: four tests, so
 #                                                    one more is a big step
 #     lwext4       57 /   4,366       80 /   6,000   ~40% / ~37%: eight tests
@@ -355,7 +360,7 @@ tasks:
     # behind by a run that was interrupted.
     cmds:
       - scripts/tools.sh --check
-      - 'scripts/tier.sh test:oracle oracle 1950 140000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
+      - 'scripts/tier.sh test:oracle oracle 2300 180000 -- scripts/test.sh --locked --release $(scripts/test-targets.sh oracle) -- --show-output'
       - 'scripts/test-floor.sh oracle 1'
 
   test:kernel:
